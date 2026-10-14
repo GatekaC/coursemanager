@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coursemanager"
+version = "1.0.0.dev0"
+description = "The course standard: course.toml, one source per lab with Otter-style markers (Python and C++), student and teacher renders with a leak check, waves and their record"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Gateka" }]
+requires-python = ">=3.11"
+dependencies = []
+keywords = ["teaching", "course", "notebook", "otter", "jupyter", "markers"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Education",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Education",
+  "Framework :: Jupyter",
+]
+
+[project.urls]
+Homepage = "https://github.com/GatekaC/coursemanager"
+Standard = "https://github.com/GatekaC/coursemanager/blob/main/COURSE.md"
+Changelog = "https://github.com/GatekaC/coursemanager/blob/main/CHANGELOG.md"
+
+[project.scripts]
+coursemanager = "coursemanager.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
