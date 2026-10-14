@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 — unreleased
+## 1.0.0 — 2026-10-14
 
 The first release as a project of its own. Born as `maqi-package`, then
 `maqi-course` (one file, then a package, in a private platform repository),

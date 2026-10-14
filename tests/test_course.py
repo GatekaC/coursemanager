@@ -48,13 +48,11 @@ name = "toy"
 audience = ["@m0.students", "@m1.students"]
 teacher = ["teacher/", "*.teacher.*"]
 
-[wave.w0]
-lab = "init"
+[wave.init]
 content = ["README.md"]
 released = ["@m0.students"]
 
-[wave.w1]
-lab = "intro"
+[wave.intro]
 content = ["intro/"]
 exclude = ["runs/"]
 released = []
@@ -85,26 +83,40 @@ class TestSpec(unittest.TestCase):
             self.assertIn("must be a list", spec.released_to(bad, who)[1][0])
         self.assertIn("not in who", spec.released_to(["@m3.students"], who)[1][0])
 
-    def test_course_toml_first_package_toml_still_read(self):
+    def test_the_earlier_grammar_is_refused_with_one_answer(self):
+        for text in ('[package]\nname = "old"\n', '[course]\nname = "c"\n[subpackage.x]\nnotebook = "x/x.py"\n',
+                     '[course]\nname = "c"\n[wave.w]\nlab = "x"\n', '[course]\nname = "c"\n[wave.w]\nid = "x"\n',
+                     '[course]\nname = "c"\n[wave.w]\nlabs = ["a"]\n', '[course]\nname = "c"\nrenderer = "markers"\n',
+                     '[course]\nname = "c"\n[wave.w]\nrenderer = "markers"\n'):
+            with self.assertRaises(CourseError) as cm:
+                spec.labs_of(spec.parse(text))
+            self.assertIn("migrate", str(cm.exception), text)
         c = Course(TOML, {})
-        (c.root / "package.toml").write_text('[package]\nname = "old"\n', encoding="utf-8")
-        self.assertEqual(spec.load(c.root)[0]["name"], "toy")
         (c.root / "course.toml").unlink()
-        self.assertEqual(spec.load(c.root)[0]["name"], "old")
+        (c.root / "package.toml").write_text('[package]\nname = "old"\n', encoding="utf-8")
+        with self.assertRaises(CourseError) as cm:
+            spec.load(c.root)
+        self.assertIn("migrate", str(cm.exception))
+
+    def test_an_unknown_key_is_refused_not_ignored(self):
+        with self.assertRaises(CourseError) as cm:
+            spec.labs_of(spec.parse('[course]\nname = "c"\n[wave.w]\ncontents = ["w/"]\n'))
+        self.assertIn("unknown key 'contents'", str(cm.exception))
+        with self.assertRaises(CourseError):
+            spec.course_table(spec.parse('[course]\nname = "c"\nteacher_patterns = []\n'))
 
     def test_waves(self):
         c = Course(TOML, {})
         w = spec.waves(spec.parse((c.root / "course.toml").read_text()))
-        self.assertEqual(w["w0"]["who"], ["@m0.students", "@m1.students"])
-        self.assertEqual(w["w0"]["released"], ["@m0.students"])
-        self.assertEqual(w["w1"]["released"], [])
+        self.assertEqual(w["init"]["who"], ["@m0.students", "@m1.students"])
+        self.assertEqual(w["init"]["released"], ["@m0.students"])
+        self.assertEqual(w["intro"]["released"], [])
 
     def test_mistakes_are_reported(self):
         with self.assertRaises(CourseError):
-            spec.labs_of(spec.parse('[wave.a]\nlab = "x"\n[wave.b]\nlab = "x"\n'))
-        w = spec.waves(spec.parse('[course]\nname="t"\n[wave.a]\nlab = "x"\nlabs = ["y"]\n'),
-                       labs={"x": {}})
-        self.assertIn("unknown lab", w["a"]["error"])
+            spec.labs_of(spec.parse('[course]\nname = "c"\n[wave.a.lab.x]\n[wave.b.lab.x]\n'))
+        with self.assertRaises(CourseError):
+            spec.labs_of(spec.parse('[course]\nname = "c"\n[wave.Bad]\n'))
 
 
 class TestBuild(unittest.TestCase):
@@ -289,26 +301,77 @@ class Program(unittest.TestCase):
         self.assertIn("{{program}}", personalise(b"{{program}}", "README.md", {"login": "x"}).decode())  # no value: kept
 
 
-class WaveId(unittest.TestCase):
-    """A wave's name is its short name; waves keep the order of the file."""
-    def test_name_order_and_old_keys(self):
+class Waves(unittest.TestCase):
+    """A wave is named by what it delivers; waves keep the order of the file."""
+    def test_name_order_and_several_labs(self):
         cfg = spec.parse(textwrap.dedent("""
             [course]
             name = "c"
             [wave.init]
             content = ["README.md"]
-            [wave.w1]
-            lab = "microintro"
-            content = ["microintro/"]
+            [wave.microintro]
             [wave.orderbook]
-            [wave.alpha]
-            content = ["a/", "b/"]
+            [wave.week3.lab.alpha]
+            content = ["a/"]
+            [wave.week3.lab.beta]
             """))
         w = spec.waves(cfg)
-        self.assertEqual(list(w), ["init", "w1", "orderbook", "alpha"])          # the file's order, not sorted
-        self.assertEqual([x["labs"] for x in w.values()], [["init"], ["microintro"], ["orderbook"], ["alpha"]])
+        self.assertEqual(list(w), ["init", "microintro", "orderbook", "week3"])          # the file's order, not sorted
+        self.assertEqual([x["labs"] for x in w.values()], [["init"], ["microintro"], ["orderbook"], ["alpha", "beta"]])
         self.assertEqual([x["order"] for x in w.values()], [0, 1, 2, 3])
-        self.assertEqual(spec.labs_of(cfg)["orderbook"]["content"], ["orderbook/"])
+        labs = spec.labs_of(cfg)
+        self.assertEqual(labs["orderbook"]["content"], ["orderbook/"])
+        self.assertEqual((labs["alpha"]["content"], labs["beta"]["content"], labs["beta"]["wave"]), (["a/"], ["beta/"], "week3"))
+
+
+class Migrate(unittest.TestCase):
+    """`coursemanager migrate`: the earlier grammar, rewritten once."""
+    OLD = """
+        [package]
+        name = "use_cases"
+        title = "Use cases"
+        renderer = "bulkhours"
+        audience = ["@m2.students"]
+        hub = "stu"
+
+        [subpackage.microintro]
+        notebook = "microintro/microintro.py"
+        buckets = ["trades"]
+
+        [subpackage.orderbook]
+
+        [wave.w1]
+        lab = "microintro"
+        title = "Intro"
+        released = ["@m2.students"]
+
+        [wave.w2]
+        labs = ["orderbook"]
+        released = true
+        """
+
+    def test_rewrites_and_the_result_loads(self):
+        from coursemanager.legacy import migrate
+        c = Course("[course]\nname = 'x'\n", {})
+        (c.root / "course.toml").unlink()
+        (c.root / "package.toml").write_text(textwrap.dedent(self.OLD), encoding="utf-8")
+        notes = migrate(c.root)
+        text = (c.root / "course.toml").read_text(encoding="utf-8")
+        self.assertTrue((c.root / "package.toml.before-migrate").is_file())
+        self.assertFalse((c.root / "package.toml").exists())
+        self.assertIn("[course]", text); self.assertNotIn("renderer", text); self.assertNotIn("hub", text)
+        self.assertIn("[wave.microintro]", text)                 # the lab's name: the label the engine knows
+        self.assertIn('content = ["microintro/"]', text)
+        self.assertIn('buckets = ["trades"]', text)
+        self.assertIn("[wave.w2.lab.orderbook]", text)
+        self.assertIn("released = []", text)                     # `true` named no cohort
+        self.assertTrue(any("released = True cannot be migrated" in n for n in notes), notes)
+        course, labs = spec.load(c.root)
+        self.assertEqual(course["name"], "use_cases")
+        self.assertEqual(sorted(labs), ["microintro", "orderbook"])
+        w = spec.waves(spec.parse(text))
+        self.assertEqual(list(w), ["microintro", "w2"])
+        self.assertEqual(w["microintro"]["released"], ["@m2.students"])
 
 
 class Standalone(unittest.TestCase):
@@ -325,16 +388,23 @@ class Standalone(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env={"PYTHONPATH": str(src), "PATH": "/usr/bin:/bin"})
         self.assertEqual(r.stdout.strip(), "[]", r.stderr)
 
-    def test_renderer_names_are_one_renderer(self):
-        from coursemanager.render import render_with
-        src = textwrap.dedent("""\
-            total = sum(xs)  # BULKHOURS.INIT: 0
-            k = f(5)  # SOLUTION
-            """).splitlines(True)
-        for v in ("student", "teacher"):
-            self.assertEqual(render_with("bulkhours", src, v), render_with("markers", src, v))   # the older value of `renderer`
-        with self.assertRaises(ValueError):
-            render_with("other", src, "student")
+    def test_compound_assignment_keeps_its_operator(self):
+        from coursemanager.render import render
+        self.assertEqual("".join(render(["x += f()  # SOLUTION\n", "n //= 2  # SOLUTION: 1\n"], "student")), "x += ...\nn //= 1\n")
+        self.assertEqual("".join(render(["x += f();  // SOLUTION\n"], "student", "//")), "x += /* ... */;\n")
+
+    def test_short_and_reformatted_answers_are_leaks(self):
+        from coursemanager.render import problems
+        self.assertTrue(problems(["return 42  # SOLUTION\n", "# PROMPT: return 42\n"])[0])
+        self.assertTrue(problems(["a = f('x').g()  # SOLUTION\n", "# PROMPT: a = f( 'x' ).g()\n"])[0])
+        self.assertEqual(problems(["def f():\n", "    # BEGIN SOLUTION\n", "    pass\n", "    # END SOLUTION\n",
+                                   "    # BEGIN PROMPT\n", "    # pass\n", "    # END PROMPT\n"])[0], [])
+
+    def test_an_open_block_names_its_line(self):
+        from coursemanager.render import render
+        with self.assertRaises(ValueError) as cm:
+            render(["x = 1\n", "# BEGIN SOLUTION\n", "y = 2\n"], "student")
+        self.assertIn("line 2: SOLUTION block still open", str(cm.exception))
 
 
 class Cpp(unittest.TestCase):

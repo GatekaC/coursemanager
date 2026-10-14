@@ -1,23 +1,40 @@
-"""The course file: one loader, for the command line and the deploy engine.
+"""The course file: one loader, for the command line and a deploy engine.
 
-A course lives in one organisation of a git forge; its `solution` repository holds a
-`course.toml` (`package.toml`, its earlier name, is still read). The format is
-described key by key in COURSE.md; this module is its only reader, so what
-`coursemanager check` accepts and what the engine deploys cannot drift apart.
+A course lives in one organisation of a git forge; its `solution` repository
+holds a `course.toml`. The format is described key by key in COURSE.md; this
+module is its only reader, so what `coursemanager check` accepts and what an
+engine deploys cannot drift apart.
+
+ONE GRAMMAR. A key this module does not know is refused, never ignored: a
+misspelt key would otherwise be a silent no-op. The forms of before 1.0
+(`package.toml`, `[package]`, `[subpackage]`, `lab = "x"`, `id`, `labs`,
+`notebook`, `renderer`, `hub`) are refused with one answer: run
+`coursemanager migrate` (legacy.py reads them, once, to rewrite the file).
 
 Nothing here prints or exits: problems raise CourseError, and the caller
 decides what a problem means (a CLI stops, the engine marks the course).
 """
-import os
 import re
 import tomllib
 from pathlib import Path
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,39}$")   # labs may be numbered: 00-getting-started
-FILES = ("course.toml", "package.toml")          # the first one found wins
-RENDERERS = ("markers", "bulkhours")             # the second is the OLDER NAME of the one renderer, kept so files still load
+LOGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+FILE = "course.toml"
 STATUSES = ("active", "past")                    # [course] status; absent = active
 DELIVERIES = ("engine", "external")              # [course] delivery; absent = engine
+
+TOP_KEYS = {"course", "wave"}
+COURSE_KEYS = {"name", "title", "status", "delivery", "source", "published", "kernel",
+               "teachers", "audience", "teacher", "moodle"}
+LAB_KEYS = {"title", "content", "exclude", "files", "buckets"}
+WAVE_KEYS = LAB_KEYS | {"who", "summary", "released", "at", "lab"}
+# The earlier grammar, named so the error can say `migrate` instead of `unknown`.
+LEGACY = {"package": "[package] is now [course]", "subpackage": "[subpackage.<x>] is now [wave.<x>]",
+          "id": "`id` is gone: the wave's name is what it delivers", "labs": "`labs = [...]` is now [wave.<w>.lab.<x>] tables",
+          "notebook": "`notebook` is now `content`", "renderer": "`renderer` is gone: there is one renderer",
+          "hub": "`hub` is gone: the machine belongs to the deployment"}
+MIGRATE = " - run `coursemanager migrate`"
 
 
 class CourseError(Exception):
@@ -26,33 +43,58 @@ class CourseError(Exception):
 
 def course_file(root):
     """The course file of a folder, or None."""
-    for name in FILES:
-        if (Path(root) / name).is_file():
-            return Path(root) / name
-    return None
+    f = Path(root) / FILE
+    return f if f.is_file() else None
 
 
 def find_root(start=None):
-    """The folder holding the course file, from `start` upwards."""
-    p = Path(start or os.getcwd()).resolve()
-    for d in (p, *p.parents):
+    """The folder holding course.toml, from `start` upwards."""
+    here = Path(start or Path.cwd()).resolve()
+    for d in (here, *here.parents):
         if course_file(d):
             return d
-    raise CourseError("no course.toml here or above: run this inside a course "
-                      "(or `coursemanager init <name>`)")
+    if (here / "package.toml").is_file():
+        raise CourseError("package.toml is the earlier grammar" + MIGRATE)
+    raise CourseError("no course.toml here or above: run this inside a course (or `coursemanager init <course>`)")
 
 
 def parse(text):
-    """The raw TOML of a course file."""
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise CourseError("course.toml: %s" % e)
 
 
+def _refuse_unknown(table, allowed, where):
+    for k in table:
+        if k in allowed:
+            continue
+        if k in LEGACY:
+            raise CourseError("course.toml: %s: %s%s" % (where, LEGACY[k], MIGRATE))
+        raise CourseError("course.toml: %s: unknown key %r (COURSE.md lists them)" % (where, k))
+
+
+def course_table(cfg):
+    """The [course] table, checked key by key."""
+    for k in cfg:
+        if k not in TOP_KEYS:
+            if k in LEGACY:
+                raise CourseError("course.toml: %s%s" % (LEGACY[k], MIGRATE))
+            raise CourseError("course.toml: unknown table [%s]" % k)
+    course = cfg.get("course")
+    if not isinstance(course, dict):
+        raise CourseError("course.toml: no [course] table")
+    _refuse_unknown(course, COURSE_KEYS, "[course]")
+    return course
+
+
+def _list(v):
+    return [v] if isinstance(v, str) else list(v or [])
+
+
 def status_of(course):
-    """[course] status: "active" (the default) or "past" - a course kept as a
-    record, from which nothing is deployed any more."""
+    """[course] status: active (default) or past - a past course is kept as a
+    record, nothing is deployed from it."""
     s = str(course.get("status") or "active").strip().lower()
     if s not in STATUSES:
         raise CourseError("course.toml: status must be active or past (got %r)" % s)
@@ -71,105 +113,17 @@ def delivery_of(course):
     return d
 
 
-LOGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
-
-
 def teachers_of(course):
     """[course] teachers: the forge logins of the course's teachers, or
-    None when the key is absent (the platform's teachers then)."""
-    t = course.get("teachers")
-    if t is None:
-        return None
-    t = [t] if isinstance(t, str) else [str(x) for x in t]
+    [] (the platform's teachers then)."""
+    t = _list(course.get("teachers"))
+    t = [str(x).strip() for x in t if str(x).strip()]
     bad = [x for x in t if not LOGIN.match(x)]
     if bad:
         raise CourseError("course.toml: teachers must be forge logins (got %s)" % ", ".join(map(repr, bad)))
     return list(dict.fromkeys(t))
 
 
-def course_table(cfg):
-    """[course], or [package] in a file written before 2026-10-14."""
-    return cfg.get("course") or cfg.get("package") or {}
-
-
-def _list(v):
-    return [v] if isinstance(v, str) else list(v or [])
-
-
-def labs_of(cfg, renderer_env=None):
-    """{lab: spec}. A LAB is what one deployment writes into a person's
-    repository, at the paths it has in `solution`. Declared by the waves:
-
-        [wave.microintro]
-        content = ["microintro/"]        # default: <lab>/
-        exclude = ["runs/"]              # delivered to nobody
-
-    Several labs in one wave: [wave.<name>.lab.<x>], one table each. The older
-    [subpackage.<name>] sections are read into the same shape."""
-    course = course_table(cfg)
-    teacher = _list(course.get("teacher"))
-    renderer_env = os.environ.get("COURSE_RENDERER") if renderer_env is None else renderer_env
-    labs = {}
-
-    def add(name, spec, title, wave):
-        if not NAME.match(name):
-            raise CourseError("course.toml: lab name %r is not valid (lowercase letters, digits, _ or -)" % name)
-        if name in labs:
-            raise CourseError("course.toml: lab %s is declared twice" % name)
-        labs[name] = {"name": name, "title": spec.get("title") or title or name, "wave": wave,
-                      "content": _list(spec.get("content")) or [name + "/"],
-                      "exclude": _list(spec.get("exclude")), "teacher": teacher,
-                      "buckets": _list(spec.get("buckets")), "files": _list(spec.get("files")),
-                      "data": _list(spec.get("data")),
-                      "renderer": renderer_env or spec.get("renderer") or course.get("renderer") or "markers"}
-        if labs[name]["renderer"] not in RENDERERS:
-            raise CourseError("course.toml: lab %s: renderer must be markers (or its older name)" % name)
-
-    for name, s in (cfg.get("subpackage") or {}).items():
-        nb = Path(s.get("notebook") or "%s/%s.py" % (name, name))
-        add(name, dict(s, content=[str(nb) if nb.parent == Path(".") else str(nb.parent) + "/"]), s.get("title"), "")
-    for wave, w in (cfg.get("wave") or {}).items():
-        if not isinstance(w, dict):
-            continue
-        lab = w.get("lab")
-        if isinstance(lab, dict):
-            for name, spec in lab.items():
-                add(name, spec if isinstance(spec, dict) else {}, w.get("title"), wave)
-        else:
-            add(wave_id(wave, w), w, w.get("title"), wave)
-    return labs
-
-
-def wave_id(wave, w):
-    """The short name of what a wave delivers: the wave's own name -
-    [wave.microintro] delivers `microintro` (`id` or `lab`, in files written
-    before 2026-10-14, still override it). What is delivered is decided by
-    `content` alone; the name labels the delivery - on the Courses page, in
-    the README program, and in the `deploy <name>` commit by which the engine
-    finds what a person already has. Never rename a wave already delivered:
-    it would be a new delivery for everyone who has it."""
-    for key in ("id", "lab"):
-        if isinstance(w.get(key), str) and w[key]:
-            return w[key]
-    return wave
-
-
-def load(root):
-    """(course, labs) of the course in `root`: what the command line works on."""
-    f = course_file(root)
-    if not f:
-        raise CourseError("no course.toml in %s" % root)
-    cfg = parse(f.read_text(encoding="utf-8"))
-    course = course_table(cfg)
-    if not NAME.match(course.get("name", "")):
-        raise CourseError("course.toml: [course] name must be lowercase letters, digits, _ or -")
-    status_of(course)
-    delivery_of(course)
-    teachers_of(course)
-    return course, labs_of(cfg)
-
-
-# ── Who a wave goes to, and when ───────────────────────────────────────────
 def audience_of(course):
     """[course] audience as wave recipients: "m2.students", "@m2.students",
     or a list of either -> ["@m2.students", ...]; empty -> []."""
@@ -178,16 +132,51 @@ def audience_of(course):
     return [x if x.startswith("@") or x == "all" else "@" + x for x in a if x]
 
 
+def labs_of(cfg):
+    """{lab: spec}. A LAB is what one deployment writes into a person's
+    repository, at the paths it has in `solution`. Declared by the waves:
+
+        [wave.microintro]
+        content = ["microintro/"]        # default: <lab>/
+        exclude = ["runs/"]              # delivered to nobody
+
+    Several labs in one wave: [wave.<name>.lab.<x>], one table each."""
+    course = course_table(cfg)
+    teacher = _list(course.get("teacher"))
+    labs = {}
+
+    def add(name, spec, title, wave, where):
+        if not NAME.match(name):
+            raise CourseError("course.toml: lab name %r is not valid (lowercase letters, digits, _ or -)" % name)
+        if name in labs:
+            raise CourseError("course.toml: lab %s is declared twice" % name)
+        _refuse_unknown(spec, LAB_KEYS if where != "[wave.%s]" % name else WAVE_KEYS, where)
+        labs[name] = {"name": name, "title": spec.get("title") or title or name, "wave": wave,
+                      "content": _list(spec.get("content")) or [name + "/"],
+                      "exclude": _list(spec.get("exclude")), "teacher": teacher,
+                      "buckets": _list(spec.get("buckets")), "files": _list(spec.get("files"))}
+
+    for wave, w in (cfg.get("wave") or {}).items():
+        if not isinstance(w, dict):
+            raise CourseError("course.toml: [wave.%s] must be a table" % wave)
+        _refuse_unknown(w, WAVE_KEYS, "[wave.%s]" % wave)
+        lab = w.get("lab")
+        if lab is None:
+            add(wave, w, w.get("title"), wave, "[wave.%s]" % wave)
+        elif isinstance(lab, dict):
+            for name, spec in lab.items():
+                if not isinstance(spec, dict):
+                    raise CourseError("course.toml: [wave.%s.lab.%s] must be a table" % (wave, name))
+                add(name, spec, w.get("title"), wave, "[wave.%s.lab.%s]" % (wave, name))
+        else:
+            raise CourseError("course.toml: [wave.%s]: `lab = %r` is the earlier grammar (the wave's name is the lab)%s" % (wave, lab, MIGRATE))
+    return labs
+
+
 def wave_labs(w, wave=""):
-    """The deliveries of a wave: [wave.<w>.lab.<x>] tables, `labs = [...]`, or
-    its one `id` (see wave_id)."""
-    labs = _list(w.get("labs"))
+    """The deliveries of a wave: its [wave.<w>.lab.<x>] tables, or itself."""
     lab = w.get("lab")
-    if isinstance(lab, dict):
-        labs += list(lab)
-    elif not labs:
-        labs.append(wave_id(wave, w))
-    return [l for i, l in enumerate(labs) if l not in labs[:i]]
+    return list(lab) if isinstance(lab, dict) else [wave]
 
 
 def released_to(r, who):
@@ -217,15 +206,14 @@ def released_to(r, who):
 
 
 def waves(cfg, labs=None):
-    """{wave: {title, labs, who, at, released, order[, error]}} - what the
-    engine deploys, in the order of the file (`order`: its position, for
-    readers that do not keep key order). `at` (optional) has the wave deployed on its own at that time."""
+    """{wave: {title, labs, who, at, released, summary, order[, error]}} - what
+    the engine deploys, in the order of the file (`order`: its position, for
+    readers that do not keep key order). `at` has the wave deployed on its own
+    at that time."""
     course = course_table(cfg)
     labs = labs_of(cfg) if labs is None else labs
     out = {}
     for name, w in (cfg.get("wave") or {}).items():
-        if not isinstance(w, dict):
-            continue
         ls = wave_labs(w, name)
         who = w.get("who") or audience_of(course) or "all"
         who = who.split() if isinstance(who, str) else [str(x) for x in who]
@@ -238,10 +226,25 @@ def waves(cfg, labs=None):
                      # The README's {{program}}: shown to a person once the wave reached them.
                      "summary": " ".join(str(w.get("summary") or "").split())}
         bad = [l for l in ls if l not in labs]
-        if not ls:
-            problems.append("no labs")
-        elif bad:
+        if bad:
             problems.append("unknown lab(s): " + ", ".join(bad))
         if problems:
             out[name]["error"] = "; ".join(problems)
     return out
+
+
+def load(root):
+    """(course, labs) of the course in `root`: what the command line works on."""
+    f = course_file(root)
+    if not f:
+        if (Path(root) / "package.toml").is_file():
+            raise CourseError("package.toml is the earlier grammar" + MIGRATE)
+        raise CourseError("no course.toml in %s" % root)
+    cfg = parse(f.read_text(encoding="utf-8"))
+    course = course_table(cfg)
+    if not NAME.match(course.get("name", "")):
+        raise CourseError("course.toml: [course] name must be lowercase letters, digits, _ or -")
+    status_of(course)
+    delivery_of(course)
+    teachers_of(course)
+    return course, labs_of(cfg)

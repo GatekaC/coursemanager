@@ -57,8 +57,8 @@ may be mixed in one file.
     # BULKHOURS.PRINT:hint = ...                    student: hint = ...  (student only)
 
 Only text is rewritten, at render time: a student's notebook imports nothing.
-`renderer = "markers"` (default) in [course] or in a wave; its older value
-names the same, single renderer (COURSE_RENDERER overrides both).
+One renderer, for every lab and every language (the comment leader is the
+file's: `#` or `//`).
 
 THE LEAK CHECK: every substantial line of the source that only the teacher
 may see (inside a SOLUTION or REMOVE block, or the teacher's side of INIT /
@@ -76,9 +76,11 @@ DEPLOYING TO PEOPLE is the platform's job, not this command's: its deploy
 engine calls `build` and commits the result into each person's repository
 (COURSE.md, "The rules"). This command never reaches the forge.
 
-Environment: COURSE_JUPYTEXT (the jupytext to run), COURSE_RENDERER (override),
-COURSE_HUB and COURSE_PREVIEW_URL (a template with {hub}, {user}, {rel} for
-the preview's link), WASABI_BUCKETS (the buckets a data key opens here).
+Environment: COURSE_JUPYTEXT (the jupytext to run), COURSE_HUB and
+COURSE_PREVIEW_URL (a template with {hub}, {user}, {rel} for the preview's
+link), COURSE_BUCKETS (the data buckets a key opens on this machine).
+
+    coursemanager migrate                a course.toml of before 1.0, rewritten
 """
 import argparse
 import os
@@ -179,8 +181,8 @@ def cmd_init(a):
         'kernel = "%s"                         # the kernel the notebooks ask for\n'
         'audience = []                                    # who a wave goes to by default, e.g. ["@m2.students"]\n'
         'teacher = ["teacher/", "*.teacher.*"]            # never delivered, from any lab\n\n'
-        '# A wave is a release; its lab is declared with it. `lab` names the folder.\n'
-        '# released: the cohorts the wave may go to; [] is a draft.\n'
+        '# A wave is a release, named by what it delivers: [wave.<lab>] delivers <lab>/.\n'
+        '# released: the cohorts it has been deployed to (a record); [] is a draft.\n'
         % (a.name, a.title or a.name, a.kernel), encoding="utf-8")
     (root / ".gitignore").write_text("build/\n.ipynb_checkpoints/\n__pycache__/\n", encoding="utf-8")
     (root / "README.md").write_text("# %s\n\nA MaQI course. `coursemanager status` lists its waves and labs.\n" % (a.title or a.name), encoding="utf-8")
@@ -212,15 +214,15 @@ def cmd_check(a):
     root = find_root(); pkg, subs = load(root)
     title("Course %s - check" % pkg["name"])
     bad = 0
-    allowed = set((os.environ.get("WASABI_BUCKETS") or "").replace(",", " ").split())
-    for name, sub in chosen(subs, a.subpackage).items():
+    allowed = set((os.environ.get("COURSE_BUCKETS") or "").replace(",", " ").split())
+    for name, sub in chosen(subs, a.lab).items():
         files = sub_files(root, sub)
         errs, nsol, nbs = [], 0, 0
         for f, rel, hidden in files:
             if f.suffix not in MARKED or hidden: continue
             nbs += f.suffix == ".ipynb" or (f.suffix == ".py" and is_notebook(f.read_text(encoding="utf-8")))
             for ch in chunks(f):
-                e, n = problems(ch, sub["renderer"], file_leader(f))
+                e, n = problems(ch, file_leader(f))
                 errs += ["%s: %s" % (rel, x) for x in e]; nsol += n
         for e in errs: fail("%s: %s" % (name, e))
         bad += len(errs)
@@ -244,7 +246,7 @@ def cmd_check(a):
 def cmd_render(a):
     root = find_root(); pkg, subs = load(root)
     title("Course %s - render" % pkg["name"])
-    for name, sub in chosen(subs, a.subpackage).items():
+    for name, sub in chosen(subs, a.lab).items():
         out, nsol, kept = do_render(root, pkg, name, sub, notebooks=False)
         ok("%s: %d exercise(s) -> build/student/%s and build/teacher/%s%s" % (
             name, nsol, name, name, (", %d file(s) kept from students" % kept) if kept else ""))
@@ -255,7 +257,7 @@ def cmd_build(a):
     their jupytext sources. What the platform's deploy engine runs."""
     root = find_root(); pkg, subs = load(root)
     title("Course %s - build" % pkg["name"])
-    for name, sub in chosen(subs, a.subpackage).items():
+    for name, sub in chosen(subs, a.lab).items():
         out, nsol, kept = do_render(root, pkg, name, sub, notebooks=True)
         ok("%s: %d exercise(s), %d notebook(s), %d file(s) kept from students" % (name, nsol, len(out["student"]), kept))
 
@@ -265,8 +267,8 @@ def cmd_preview(a):
     title("Course %s - preview in your account only" % pkg["name"])
     dest = Path.home() / "preview" / pkg["name"]
     user = os.environ.get("JUPYTERHUB_USER") or os.environ.get("USER") or ""
-    hub = os.environ.get("COURSE_HUB") or pkg.get("hub", "")
-    for name, sub in chosen(subs, a.subpackage).items():
+    hub = os.environ.get("COURSE_HUB") or ""
+    for name, sub in chosen(subs, a.lab).items():
         out, nsol, kept = do_render(root, pkg, name, sub, notebooks=True)
         for v in VARIANTS:
             d = dest / v / name
@@ -287,6 +289,22 @@ def cmd_preview(a):
     print("\n  Check   student: stops on NotImplementedError · teacher: runs end to end")
 
 
+def cmd_migrate(a):
+    """A course file in the grammar of before 1.0 -> the current one; the
+    original stays as <file>.before-migrate."""
+    from .legacy import migrate
+    root = Path(a.path or ".").resolve()
+    title("Course in %s - migrate" % root)
+    try:
+        notes = migrate(root)
+    except CourseError as e:
+        die(str(e))
+    for n in notes:
+        ok(n)
+    load(root)                                   # the result must load, or the migration is wrong
+    ok("course.toml loads in the current grammar")
+
+
 def cmd_status(a):
     root = find_root(); pkg, subs = load(root)
     cfg = tomllib.loads(spec.course_file(root).read_text(encoding="utf-8"))
@@ -302,7 +320,7 @@ def cmd_status(a):
         try:
             for f, r, hidden in sub_files(root, sub):
                 if f.suffix in MARKED and not hidden:
-                    n += sum(problems(ch, sub["renderer"], file_leader(f))[1] for ch in chunks(f))
+                    n += sum(problems(ch, file_leader(f))[1] for ch in chunks(f))
         except SystemExit:
             n = "(!)"
         print("  %-6s %-14s %-24s %-10s %s" % (sub["wave"] or "-", name, rel, n, ", ".join(sub["content"])))
@@ -334,8 +352,9 @@ def main():
     s.set_defaults(f=cmd_init)
     s = sp.add_parser("new"); s.add_argument("name"); s.add_argument("--title", default=""); s.set_defaults(f=cmd_new)
     for name, f in (("check", cmd_check), ("render", cmd_render), ("build", cmd_build), ("preview", cmd_preview)):
-        s = sp.add_parser(name); s.add_argument("subpackage", nargs="?", metavar="lab"); s.set_defaults(f=f)
+        s = sp.add_parser(name); s.add_argument("lab", nargs="?", metavar="lab"); s.set_defaults(f=f)
     s = sp.add_parser("status"); s.set_defaults(f=cmd_status)
+    s = sp.add_parser("migrate"); s.add_argument("path", nargs="?"); s.set_defaults(f=cmd_migrate)
     a = p.parse_args()
     try:
         a.f(a)

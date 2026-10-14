@@ -28,8 +28,11 @@ repository, `<course>/<login>`, written by deployments.
 `coursemanager init <course>` writes this skeleton, `coursemanager new <lab>` adds
 a lab and a draft wave. `course.toml` is read by `coursemanager` and by a
 platform's deploy engine through the same loader (`coursemanager.spec`): what
-`check` accepts is what can be deployed. `package.toml` with `[package]`, the earlier
-name, is still read.
+`check` accepts is what can be deployed. **One grammar**: a key this file does
+not list is refused, never ignored; a file written in the grammar of before
+1.0 (`package.toml`, `[package]`, `[subpackage]`, `lab = "x"`, `id`, `labs`,
+`notebook`, `renderer`, `hub`) is refused with one answer, `coursemanager
+migrate`, which rewrites it and keeps the original next to it.
 
 ## `[course]`
 
@@ -43,7 +46,6 @@ name, is still read.
 | `teachers` | | the course's teachers, forge logins: `["ada", "guillaume"]`. Its `teachers` team is exactly this list (kept in step by the engine). Absent: the platform's teachers |
 | `audience` | | the cohorts it is for: `["@m1.students", "@m2.students"]`. Default `who` of every wave. `@teachers` is the course's own `teachers` (to receive the student version as students do), not the platform team |
 | `teacher` | | patterns never delivered to students, from any lab: `["teacher/", "*.teacher.*"]` |
-| `renderer` | | `markers` (default); the older value of this key names the same, single renderer and is kept so older files still load |
 | `moodle` | | the course's Moodle page: `https://moodle.example.org/course/view.php?id=123`, linked on its card |
 
 No `hub`: which machine a cohort works on belongs to the deployment.
@@ -55,14 +57,16 @@ in the order of the file: that order is the course's, on the Courses page and
 in the README program. The name labels the delivery (the `deploy <name>`
 commit by which the engine knows who has it); **never rename a wave once it
 has been delivered**: it would be a new delivery for everyone who has it.
-Several deliveries in one wave: `[wave.<name>.lab.<x>]`, one table each.
-`id` / `lab`, in files written before 2026-10-14, still override the name.
+Several deliveries in one wave: `[wave.<name>.lab.<x>]`, one table each
+(the same keys as a wave's `content`, `exclude`, `files`, `buckets`, `title`).
 
 | Key | | |
 |---|---|---|
 | `title` | | shown on the card |
 | `content` | | **what is delivered**: files and folders, at their paths in `solution`. Default `["<name>/"]` |
 | `exclude` | | build output, caches, run artifacts: delivered to nobody |
+| `files` | | files or folders outside `content`, delivered with the lab at their own path |
+| `buckets` | | data buckets the lab reads in place (named, not copied); `check` warns when the machine's key does not open one (`COURSE_BUCKETS`) |
 | `who` | | the cohorts it may go to. Default: `[course] audience` |
 | `summary` | | its row in the README's `{{program}}` - shown to a person once the wave reached them, the title only before |
 | `released` | | **the cohorts it has been deployed to - a record, written by the deploy engine** after each deployment. A list, never true/false; `[]` or absent: not deployed yet |

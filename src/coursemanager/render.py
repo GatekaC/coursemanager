@@ -294,18 +294,6 @@ def render(lines, variant, leader="#"):
     return out
 
 
-def render_with(renderer, lines, variant, leader="#"):
-    """ONE renderer. The older value of `renderer` in a course.toml is accepted
-    and means the same thing as `markers`: the BULKHOURS./BKRESET. names are an
-    input dialect of this renderer (legacy_line), not a second engine. Until
-    2026-10-14 that value selected a second renderer loaded from another
-    project - two renderers for one notion."""
-    from .spec import RENDERERS
-    if renderer not in RENDERERS:
-        raise ValueError("unknown renderer %r (markers)" % renderer)
-    return render(lines, variant, leader)
-
-
 # Lines a solution block may hold that are not an answer by themselves: a
 # `pass` in a block and a `pass` in the prompt is not a leak.
 TRIVIAL = {"pass", "return", "break", "continue", "else:", "try:", "finally:", "{", "}", "};", "end", "fi", "done"}
@@ -352,14 +340,14 @@ def leaks(student_lines, secret):
     return sorted({l.strip() for l in student_lines if l.strip() and canon(l) in secret})
 
 
-def problems(lines, renderer="markers", leader="#"):
+def problems(lines, leader="#"):
     """What must stop a render. Returns (errors, n_exercises)."""
     M = MARKERS[leader]
     BEGIN_SOL, END_SOL, BEGIN_PRO, END_PRO, BK, MARKERISH = (
         M.BEGIN_SOL, M.END_SOL, M.BEGIN_PRO, M.END_PRO, M.BK, M.MARKERISH)
     errs = []
     try:
-        student = render_with(renderer, lines, "student", leader)
+        student = render(lines, "student", leader)
     except ValueError as e:
         return [str(e)], 0
     # Exercises: a SOLUTION block, a one-line SOLUTION (not SEED, not PROMPT),
@@ -393,9 +381,9 @@ def problems(lines, renderer="markers", leader="#"):
 
 def stable_ids(ipynb, key):
     """jupytext draws random cell ids at every conversion: an unchanged
-    subpackage would differ at every render, and students who touched the
+    lab would differ at every render, and students who touched the
     notebook would get merge conflicts on `id` lines (seen 2026-09-28 on the
-    course). Ids derive from (package, subpackage, variant, position): an
+    course). Ids derive from (package, lab, variant, position): an
     unchanged source gives a byte-identical notebook."""
     nb = json.loads(ipynb.read_text(encoding="utf-8"))
     for i, cell in enumerate(nb.get("cells", [])):
@@ -414,7 +402,7 @@ def bulkignore_rules(root, subdir):
         *.teacher.md        a file name pattern
         /microintro/raw     a path from the folder holding this .bulkignore
         !keep-this.md       un-ignore (the last matching rule wins)
-    Read from the package root and from the subpackage folder; each file's
+    Read from the package root and from the lab folder; each file's
     patterns are relative to its own folder. The teacher version ignores it:
     a teacher receives everything.
     """
@@ -526,7 +514,7 @@ def file_leader(f):
     return leader_of(f)
 
 
-def render_ipynb(f, renderer, variant):
+def render_ipynb(f, variant):
     """An authored notebook, rendered cell by cell. The student version loses
     every output and execution count: a saved output can print the answer.
     The teacher version keeps them."""
@@ -537,7 +525,7 @@ def render_ipynb(f, renderer, variant):
                    if not ignored_cell("".join(c.get("source", "")).splitlines(keepends=True), M)]
     for c in nb.get("cells", []):
         lines = "".join(c.get("source", "")).splitlines(keepends=True)
-        c["source"] = render_with(renderer, lines, variant, leader)
+        c["source"] = render(lines, variant, leader)
         if variant == "student" and c.get("cell_type") == "code":
             c["outputs"], c["execution_count"] = [], None
             c.get("metadata", {}).pop("execution", None)
@@ -561,7 +549,7 @@ def do_render(root, course, name, sub, notebooks):
         if hidden:
             continue                       # never delivered to students: nothing to check
         for ch in texts[f]:
-            errs, n = problems(ch, sub["renderer"], file_leader(f))
+            errs, n = problems(ch, file_leader(f))
             nsol += n
             bad += ["%s: %s: %s" % (name, rel, e) for e in errs]
     if bad:
@@ -582,7 +570,7 @@ def do_render(root, course, name, sub, notebooks):
             target = d / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if f.suffix == ".ipynb":
-                nb = render_ipynb(f, sub["renderer"], v)
+                nb = render_ipynb(f, v)
                 if v == "student":
                     src_lines = [l for c in nb.get("cells", []) for l in "".join(c.get("source", "")).split("\n")]
                     if leaks(src_lines, secret):
@@ -591,7 +579,7 @@ def do_render(root, course, name, sub, notebooks):
                 target.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
                 out[v].append(target)
             elif f in texts:
-                rendered = render_with(sub["renderer"], texts[f][0], v, leader_of(f))
+                rendered = render(texts[f][0], v, leader_of(f))
                 if v == "student" and leaks(rendered, secret):
                     raise CourseError("%s: %s: solution line in the student version: %s"
                         % (name, rel, leaks(rendered, secret)[0][:70]))

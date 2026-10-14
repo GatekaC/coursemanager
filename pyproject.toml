@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coursemanager"
-version = "1.0.0.dev0"
+version = "1.0.0"
 description = "The course standard: course.toml, one source per lab with Otter-style markers (Python and C++), student and teacher renders with a leak check, waves and their record"
 readme = "README.md"
 license = { file = "LICENSE" }

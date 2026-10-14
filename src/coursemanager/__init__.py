@@ -8,4 +8,4 @@ names a project, a host, a forge or a machine.
 """
 from .spec import CourseError, course_file, find_root, load, labs_of, waves, audience_of, released_to, wave_labs  # noqa: F401
 
-__version__ = "0.3.0"
+__version__ = "1.0.0"
